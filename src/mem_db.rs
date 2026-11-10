@@ -1,4 +1,4 @@
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Schema {
     pub id: i32,
     pub col1: String,
@@ -19,6 +19,15 @@ pub struct Table {
     pub content: Vec<Schema>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub enum Command {
+    CreateTable { table_id: i32, table_name: String },
+
+    Insert { table_id: i32, schema: Schema },
+
+    Delete { table_id: i32, id: i32 },
+}
+
 impl Table {
     pub fn init_table(t_name: String) -> Table {
         Table {
@@ -28,11 +37,11 @@ impl Table {
         }
     }
 
-    fn append_values(&mut self, content: Schema) {
+    pub fn append_values(&mut self, content: Schema) {
         self.content.push(content);
     }
 
-    fn delete_values(&mut self, id: i32) {
+    pub fn delete_values(&mut self, id: i32) {
         self.content.retain(|item| item.id != id);
     }
 
