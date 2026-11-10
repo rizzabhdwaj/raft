@@ -1,5 +1,5 @@
 use actix_cors::Cors;
-use actix_web::{App, HttpServer, web, HttpResponse};
+use actix_web::{App, HttpResponse, HttpServer, web};
 use std::env;
 use std::sync::Mutex;
 
@@ -15,16 +15,25 @@ async fn get_all_values(data: web::Data<Mutex<mem_db::Table>>) -> web::Json<mem_
     web::Json(all)
 }
 
+pub async fn check_health() -> HttpResponse {
+    HttpResponse::Ok().body("UP AND RUNNING")
+}  
 async fn process_command(
     data: web::Data<Mutex<mem_db::Table>>,
     cmd: web::Json<mem_db::Command>,
 ) -> HttpResponse {
     let mut table = data.lock().unwrap();
     match cmd.0 {
-        mem_db::Command::CreateTable { table_id: _, table_name } => {
+        mem_db::Command::CreateTable {
+            table_id: _,
+            table_name,
+        } => {
             *table = mem_db::Table::init_table(table_name.clone());
         }
-        mem_db::Command::Insert { table_id: _, schema } => {
+        mem_db::Command::Insert {
+            table_id: _,
+            schema,
+        } => {
             table.append_values(schema.clone());
         }
         mem_db::Command::Delete { table_id: _, id } => {
@@ -52,6 +61,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::clone(&shared_db))
             .route("/values", web::get().to(get_all_values))
             .route("/command", web::post().to(process_command))
+            .route("/health", web::post().to(check_health))
     })
     .bind(("0.0.0.0", port))?
     .run()
