@@ -1,3 +1,4 @@
+use crate::database::command::Command;
 pub struct Entry {
     pub index: u64,
     pub term: u64,
