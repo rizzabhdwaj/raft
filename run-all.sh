@@ -9,9 +9,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Start 5 database backend servers on ports 3000-3004
+# Start 5 database backend servers on HTTP ports 3000-3004 and gRPC ports 4000-4004
+PEERS="127.0.0.1:4000,127.0.0.1:4001,127.0.0.1:4002,127.0.0.1:4003,127.0.0.1:4004"
 for port in 3000 3001 3002 3003 3004; do
-    PORT="$port" target/debug/db_server &
+    PORT="$port" GRPC_PORT=$((port + 1000)) PEERS="$PEERS" target/debug/db_server &
 done
 
 # Start manager server with default backend port = 3000

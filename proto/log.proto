@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package raftlog;
+
+message Empty {}
+
+message LogEntry {
+  uint64 index = 1;
+  uint64 term = 2;
+  string command_json = 3;
+}
+
+message LogResponse {
+  repeated LogEntry entries = 1;
+}
+
+service LogService {
+  rpc GetLog(Empty) returns (LogResponse);
+}
