@@ -46,6 +46,14 @@ async fn values_specified(path: web::Path<u16>) -> HttpResponse {
     make_redirect(target_port, "/values")
 }
 
+async fn log_default() -> HttpResponse {
+    make_redirect(default_backend_port(), "/log")
+}
+
+async fn log_specified(path: web::Path<u16>) -> HttpResponse {
+    make_redirect(path.into_inner(), "/log")
+}
+
 /// Command redirect using default port (route: /command)
 async fn command_default() -> HttpResponse {
     let port = default_backend_port();
@@ -73,6 +81,8 @@ async fn main() -> std::io::Result<()> {
             // Values routes
             .route("/values", web::get().to(values_default))   // uses default port
             .route("/values/{port}", web::get().to(values_specified))  // uses specified port
+            .route("/log", web::get().to(log_default))
+            .route("/log/{port}", web::get().to(log_specified))
             // Command routes
             .route("/command", web::post().to(command_default))   // uses default port
             .route("/command/{port}", web::post().to(command_specified))  // uses specified port

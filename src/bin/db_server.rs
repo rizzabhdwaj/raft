@@ -10,6 +10,10 @@ async fn get_all_values(data: web::Data<Mutex<Table>>) -> web::Json<TableOut> {
     web::Json(table.get_all_values())
 }
 
+async fn get_log(data: web::Data<Mutex<Log>>) -> web::Json<Log> {
+    web::Json(data.lock().unwrap().clone())
+}
+
 async fn check_health() -> HttpResponse {
     HttpResponse::Ok().body("UP AND RUNNING")
 }
@@ -67,6 +71,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(database.clone())
             .app_data(log.clone())
             .route("/values", web::get().to(get_all_values))
+            .route("/log", web::get().to(get_log))
             .route("/command", web::post().to(process_command))
             .route("/health", web::get().to(check_health))
             .route("/health", web::post().to(check_health))
