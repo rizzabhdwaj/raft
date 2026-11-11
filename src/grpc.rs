@@ -1,9 +1,9 @@
 use crate::database::raft::log::Log;
-use actix_web::{web, HttpResponse};
+use actix_web::{HttpResponse, web};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tonic::{Request, Response, Status};
 use tonic::transport::Server;
+use tonic::{Request, Response, Status};
 
 pub mod proto {
     tonic::include_proto!("raftlog");
@@ -33,7 +33,10 @@ impl proto::log_service_server::LogService for LogService {
         &self,
         _request: Request<proto::Empty>,
     ) -> Result<Response<proto::LogResponse>, Status> {
-        let log = self.log.lock().map_err(|_| Status::internal("log lock poisoned"))?;
+        let log = self
+            .log
+            .lock()
+            .map_err(|_| Status::internal("log lock poisoned"))?;
         let entries = log
             .content
             .iter()
@@ -91,7 +94,9 @@ pub async fn get_cluster_logs(peers: web::Data<Vec<String>>) -> HttpResponse {
 pub fn start_server(log: Arc<Mutex<Log>>, port: u16) {
     tokio::spawn(async move {
         let server = Server::builder()
-            .add_service(proto::log_service_server::LogServiceServer::new(LogService { log }))
+            .add_service(proto::log_service_server::LogServiceServer::new(
+                LogService { log },
+            ))
             .serve(([0, 0, 0, 0], port).into());
 
         if let Err(error) = server.await {
