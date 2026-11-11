@@ -1,0 +1,122 @@
+# raft_db API Manager - Bruno Collection
+# Import this into Bruno (https://www.usebruno.com/) to test the API manager
+
+@BASE_URL = http://localhost:8080
+
+### Health Check - GET
+GET {{BASE_URL}}/health/3000
+### Health Check - POST
+POST {{BASE_URL}}/health/3000
+
+### Values Redirect - GET
+GET {{BASE_URL}}/values/3000
+
+### Command Redirect - POST
+POST {{BASE_URL}}/command/3000
+
+# Test all backend ports (3000-3004)
+
+### Port 3001 Health - GET
+GET http://localhost:8080/health/3001
+
+### Port 3001 Health - POST
+POST http://localhost:8080/health/3001
+
+### Port 3001 Values - GET
+GET http://localhost:8080/values/3001
+
+### Port 3001 Command - POST
+POST http://localhost:8080/command/3001
+
+### Port 3002 Health - GET
+GET http://localhost:8080/health/3002
+
+### Port 3002 Health - POST
+POST http://localhost:8080/health/3002
+
+### Port 3002 Values - GET
+GET http://localhost:8080/values/3002
+
+### Port 3002 Command - POST
+POST http://localhost:8080/command/3002
+
+### Port 3003 Health - GET
+GET http://localhost:8080/health/3003
+
+### Port 3003 Health - POST
+POST http://localhost:8080/health/3003
+
+### Port 3003 Values - GET
+GET http://localhost:8080/values/3003
+
+### Port 3003 Command - POST
+POST http://localhost:8080/command/3003
+
+### Port 3004 Health - GET
+GET http://localhost:8080/health/3004
+
+### Port 3004 Health - POST
+POST http://localhost:8080/health/3004
+
+### Port 3004 Values - GET
+GET http://localhost:8080/values/3004
+
+### Port 3004 Command - POST
+POST http://localhost:8080/command/3004
+
+# Test database commands directly on backend ports
+
+### Direct DB - Port 3000 CreateTable
+POST http://localhost:3000/command
+Content-Type: application/json
+
+{
+  "Command": "CreateTable",
+  "table_id": 1,
+  "table_name": "users"
+}
+
+### Direct DB - Port 3000 Insert
+POST http://localhost:3000/command
+Content-Type: application/json
+
+{
+  "Command": "Insert",
+  "table_id": 1,
+  "schema": {
+    "id": 1,
+    "col1": "John",
+    "col2": "Doe",
+    "col3": "john@example.com"
+  }
+}
+
+### Direct DB - Port 3000 Delete
+POST http://localhost:3000/command
+Content-Type: application/json
+
+{
+  "Command": "Delete",
+  "table_id": 1,
+  "id": 1
+}
+
+### Direct DB - Port 3000 Values
+GET http://localhost:3000/values
+
+# Test direct backend health (bypassing manager)
+
+### Direct Backend Health - 3000
+GET http://127.0.0.1:3000/health
+
+### Direct Backend Health - 3001
+GET http://127.0.0.1:3001/health
+
+### Direct Backend Health - 3002
+GET http://127.0.0.1:3002/health
+
+### Direct Backend Health - 3003
+GET http://127.0.0.1:3003/health
+
+### Direct Backend Health - 3004
+GET http://127.0.0.1:3004/health

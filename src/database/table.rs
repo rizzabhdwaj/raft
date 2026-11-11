@@ -1,31 +1,11 @@
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Schema {
-    pub id: i32,
-    pub col1: String,
-    pub col2: String,
-    pub col3: String,
-}
+use super::schema::Schema;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, serde::Serialize)]
-pub struct TableOut {
-    pub table_id: i32,
-    pub table_name: String,
-    pub content: Vec<Schema>,
-}
-
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Table {
     pub table_id: i32,
     pub table_name: String,
     pub content: Vec<Schema>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub enum Command {
-    CreateTable { table_id: i32, table_name: String },
-
-    Insert { table_id: i32, schema: Schema },
-
-    Delete { table_id: i32, id: i32 },
 }
 
 impl Table {
@@ -52,4 +32,11 @@ impl Table {
             content: self.content.clone(),
         }
     }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TableOut {
+    pub table_id: i32,
+    pub table_name: String,
+    pub content: Vec<Schema>,
 }
