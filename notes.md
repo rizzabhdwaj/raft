@@ -23,7 +23,7 @@
         if this.node != Role::Leader{
             let confirm = this.node.leader::process_command(body); // via grpc
             
-        }
+         }
     ```
 
     - If **Node** is **Leader** execute the command and **Broadcast** over all the nodes 
