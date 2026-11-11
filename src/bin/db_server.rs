@@ -6,7 +6,6 @@ use raft_db::database::table::{Table, TableOut};
 use raft_db::grpc;
 use std::env;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 async fn get_all_values(data: web::Data<Mutex<Table>>) -> web::Json<TableOut> {
     let table = data.lock().unwrap();
     web::Json(table.get_all_values())

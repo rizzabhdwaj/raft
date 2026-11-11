@@ -4,22 +4,53 @@
 ## Archetecture - **Client** can query any node but the request will be redirected to the **Leader** only
 
 - Each instance of server will contain following structural code 
+    
+    - At initializatione every instance of the server will be a **Follower** 
+    - A kind of voting will be performed before any request can be processed for Leader and Candidate 
+
     ```rust 
-        
+
         enum Role { 
             Follower , 
             Candidate , 
             Leader , 
         }
-    
-        // at the initialisation of every instance of server each server will be given a role 
-        // one will be leader rest candidate at random ( for testing )
+    ``` 
 
+    - Whenever any **Node** recieves a request it redirects it to the **Leader** incase its not the leader itself 
+
+    ```rust 
         if this.node != Role::Leader{
-            this.node.leader::process_command(body); // via grpc
+            let confirm = this.node.leader::process_command(body); // via grpc
+            
         }
-        
-        
+    ```
+
+    - If **Node** is **Leader** execute the command and **Broadcast** over all the nodes 
+
+    ```rust  
+        if this.node == Role::Leader{
+            
+            command_execute(body.command);
+
+            Log.append(body.command);
 
 
+
+            // there can be 2 ways of broadcasting , either broadcast to all the nodes and create a seperate function in all the nodes to catch the boardcast and update the entries / logs , or either broadcast for all logs except the one which sent us the request as that one will only recieve a success indicating compleaton and permission to replicate
+            
+            // found the earlier one more cleaner tho , just documenting my thought's  
+
+            return success ;
+        }
+    ```
+
+    - **log_replicate** is invoked using a broadcast from the **Leader Node** for updating the **Log** and State of the DataStore
+
+    ```rust 
+
+        #[route('/replicate')]
+        log_replicate(content){
+            // recieves the request from the leader and replicate its own state
+        }
     ```
