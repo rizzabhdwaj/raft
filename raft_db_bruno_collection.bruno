@@ -3,70 +3,77 @@
 
 @BASE_URL = http://localhost:8080
 
-### Health Check - GET
-GET {{BASE_URL}}/health/3000
-### Health Check - POST
-POST {{BASE_URL}}/health/3000
+### Health Check - Default Port (uses port 3000)
+GET {{BASE_URL}}/health
+### Health Check - Specified Port
+GET {{BASE_URL}}/health/3001
 
-### Values Redirect - GET
-GET {{BASE_URL}}/values/3000
+### Values Redirect - Default Port
+GET {{BASE_URL}}/values
 
-### Command Redirect - POST
-POST {{BASE_URL}}/command/3000
+### Values Redirect - Specified Port
+GET {{BASE_URL}}/values/3002
 
-# Test all backend ports (3000-3004)
+### Command Redirect - Default Port
+POST {{BASE_URL}}/command
 
-### Port 3001 Health - GET
+### Command Redirect - Specified Port
+POST {{BASE_URL}}/command/3003
+
+# Test all backend ports (3000-3004) - Health
+
+### Port 3000 Health
+GET http://localhost:8080/health
+
+### Port 3001 Health
 GET http://localhost:8080/health/3001
 
-### Port 3001 Health - POST
-POST http://localhost:8080/health/3001
-
-### Port 3001 Values - GET
-GET http://localhost:8080/values/3001
-
-### Port 3001 Command - POST
-POST http://localhost:8080/command/3001
-
-### Port 3002 Health - GET
+### Port 3002 Health
 GET http://localhost:8080/health/3002
 
-### Port 3002 Health - POST
-POST http://localhost:8080/health/3002
-
-### Port 3002 Values - GET
-GET http://localhost:8080/values/3002
-
-### Port 3002 Command - POST
-POST http://localhost:8080/command/3002
-
-### Port 3003 Health - GET
+### Port 3003 Health
 GET http://localhost:8080/health/3003
 
-### Port 3003 Health - POST
-POST http://localhost:8080/health/3003
-
-### Port 3003 Values - GET
-GET http://localhost:8080/values/3003
-
-### Port 3003 Command - POST
-POST http://localhost:8080/command/3003
-
-### Port 3004 Health - GET
+### Port 3004 Health
 GET http://localhost:8080/health/3004
 
-### Port 3004 Health - POST
-POST http://localhost:8080/health/3004
+# Test all backend ports (3000-3004) - Values
 
-### Port 3004 Values - GET
+### Port 3000 Values
+GET http://localhost:8080/values
+
+### Port 3001 Values
+GET http://localhost:8080/values/3001
+
+### Port 3002 Values
+GET http://localhost:8080/values/3002
+
+### Port 3003 Values
+GET http://localhost:8080/values/3003
+
+### Port 3004 Values
 GET http://localhost:8080/values/3004
 
-### Port 3004 Command - POST
+# Test all backend ports (3000-3004) - Command
+
+### Port 3000 Command
+POST http://localhost:8080/command
+
+### Port 3001 Command
+POST http://localhost:8080/command/3001
+
+### Port 3002 Command
+POST http://localhost:8080/command/3002
+
+### Port 3003 Command
+POST http://localhost:8080/command/3003
+
+### Port 3004 Command
 POST http://localhost:8080/command/3004
 
-# Test database commands directly on backend ports
+# Test database commands directly on backend port 3000
 
-### Direct DB - Port 3000 CreateTable
+### Direct DB - CreateTable
 POST http://localhost:3000/command
 Content-Type: application/json
 
@@ -76,7 +83,7 @@ Content-Type: application/json
   "table_name": "users"
 }
 
-### Direct DB - Port 3000 Insert
+### Direct DB - Insert
 POST http://localhost:3000/command
 Content-Type: application/json
 
@@ -91,7 +98,7 @@ Content-Type: application/json
   }
 }
 
-### Direct DB - Port 3000 Delete
+### Direct DB - Delete
 POST http://localhost:3000/command
 Content-Type: application/json
 
@@ -101,10 +108,52 @@ Content-Type: application/json
   "id": 1
 }
 
-### Direct DB - Port 3000 Values
+### Direct DB - Values
 GET http://localhost:3000/values
 
-# Test direct backend health (bypassing manager)
+# Test database commands directly on other backend ports
+
+### Direct DB - Port 3001 CreateTable
+POST http://localhost:3001/command
+Content-Type: application/json
+
+{
+  "Command": "CreateTable",
+  "table_id": 2,
+  "table_name": "orders"
+}
+
+### Direct DB - Port 3002 CreateTable
+POST http://localhost:3002/command
+Content-Type: application/json
+
+{
+  "Command": "CreateTable",
+  "table_id": 3,
+  "table_name": "products"
+}
+
+### Direct DB - Port 3003 CreateTable
+POST http://localhost:3003/command
+Content-Type: application/json
+
+{
+  "Command": "CreateTable",
+  "table_id": 4,
+  "table_name": "settings"
+}
+
+### Direct DB - Port 3004 CreateTable
+POST http://localhost:3004/command
+Content-Type: application/json
+
+{
+  "Command": "CreateTable",
+  "table_id": 5,
+  "table_name": "configurations"
+}
+
+# Direct backend health checks
 
 ### Direct Backend Health - 3000
 GET http://127.0.0.1:3000/health
@@ -120,3 +169,18 @@ GET http://127.0.0.1:3003/health
 
 ### Direct Backend Health - 3004
 GET http://127.0.0.1:3004/health
+
+# Manager server info
+
+### Manager Health Default
+GET {{BASE_URL}}/health
+
+### Manager Values Default
+GET {{BASE_URL}}/values
+
+### Manager Command Default
+POST {{BASE_URL}}/command
+
+### Manager with Custom Default Port
+# Set MANAGER_DEFAULT_PORT=3001 before running
+# GET {{BASE_URL}}/health -> redirects to http://127.0.0.1:3001/health
