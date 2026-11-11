@@ -1,0 +1,3 @@
+Created an in-memory rust data-storage system , spinned up 5 server on different port all communicating throught grpc
+plan - Follower forwarding / request redirection -> followers will redirect request to leader for each log request 
+
