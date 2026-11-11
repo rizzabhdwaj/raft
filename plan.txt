@@ -1,3 +1,2 @@
 Created an in-memory rust data-storage system , spinned up 5 server on different port all communicating throught grpc
-plan - Follower forwarding / request redirection -> followers will redirect request to leader for each log request 
-
+plan - API Gateway will redirect request to the Leader only and the leader will be responsible for replicating the log's 
