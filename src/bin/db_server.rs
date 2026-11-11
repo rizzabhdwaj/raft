@@ -1,11 +1,12 @@
 use actix_cors::Cors;
 use actix_web::{App, HttpResponse, HttpServer, web};
-use raft_db::grpc;
 use raft_db::database::command::Command;
 use raft_db::database::raft::log::Log;
 use raft_db::database::table::{Table, TableOut};
+use raft_db::grpc;
 use std::env;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 async fn get_all_values(data: web::Data<Mutex<Table>>) -> web::Json<TableOut> {
     let table = data.lock().unwrap();
     web::Json(table.get_all_values())
@@ -77,6 +78,19 @@ async fn main() -> std::io::Result<()> {
     let log_data = web::Data::from(log.clone());
     grpc::start_server(log.clone(), grpc_port);
 
+    /*
+        let monitor_database = database.clone();
+        let monitor_log = log_data.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+
+            loop {
+                interval.tick().await;
+                println!("[server:{port}] table: {:?}", monitor_database.lock().unwrap());
+                println!("[server:{port}] log: {:?}", monitor_log.lock().unwrap());
+            }
+        });
+    */
     HttpServer::new(move || {
         App::new()
             .wrap(Cors::permissive())

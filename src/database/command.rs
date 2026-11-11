@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::database::schema::Schema;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Command {
     CreateTable {
         table_id: i32,

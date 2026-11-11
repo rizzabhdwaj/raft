@@ -1,7 +1,7 @@
 use super::schema::Schema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
     pub table_id: i32,
     pub table_name: String,
@@ -34,7 +34,7 @@ impl Table {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TableOut {
     pub table_id: i32,
     pub table_name: String,

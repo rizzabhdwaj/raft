@@ -1,14 +1,14 @@
 use crate::database::command::Command;
 use serde::Serialize;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Entry {
     pub index: u64,
     pub term: u64,
     pub command: Command,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Log {
     pub content: Vec<Entry>,
 }
