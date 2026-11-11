@@ -5,8 +5,9 @@
 
 - Each instance of server will contain following structural code 
     
-    - At initializatione every instance of the server will be a **Follower** 
-    - A kind of voting will be performed before any request can be processed for Leader and Candidate 
+    - At initialization every instance of the server will be a **Follower** 
+    - Voting -> all node's when initiated would send a request to a voting server which will determine there role's
+    - Currently the voting algorithm will randomly assign role's 
 
     ```rust 
 
@@ -21,8 +22,8 @@
 
     ```rust 
         if this.node != Role::Leader{
-            let confirm = this.node.leader::process_command(body); // via grpc
-            
+            rpc Propose(ProposeRequest) returns (ProposeResponse);
+
          }
     ```
 
@@ -52,5 +53,8 @@
         #[route('/replicate')]
         log_replicate(content){
             // recieves the request from the leader and replicate its own state
+            
+
+
         }
     ```
