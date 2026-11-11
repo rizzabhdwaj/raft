@@ -11,30 +11,30 @@
 
     ```rust 
 
-        enum Role { 
-            Follower , 
-            Candidate , 
-            Leader , 
-        }
+    enum Role { 
+        Follower , 
+        Candidate , 
+        Leader , 
+    }
     ``` 
 
     - Whenever any **Node** recieves a request it redirects it to the **Leader** incase its not the leader itself 
 
     ```rust 
-        if this.node != Role::Leader{
-            rpc Propose(ProposeRequest) returns (ProposeResponse);
+    if this.node != Role::Leader{
+        rpc Propose(ProposeRequest) returns (ProposeResponse);
 
-         }
+    }
     ```
 
     - If **Node** is **Leader** execute the command and **Broadcast** over all the nodes 
 
     ```rust  
-        if this.node == Role::Leader{
+    if this.node == Role::Leader{
             
-            command_execute(body.command);
+        command_execute(body.command);
 
-            Log.append(body.command);
+        Log.append(body.command);
 
 
 
@@ -42,19 +42,19 @@
             
             // found the earlier one more cleaner tho , just documenting my thought's  
 
-            return success ;
-        }
+        return success ;
+    }
     ```
 
     - **log_replicate** is invoked using a broadcast from the **Leader Node** for updating the **Log** and State of the DataStore
 
     ```rust 
 
-        #[route('/replicate')]
-        log_replicate(content){
-            // recieves the request from the leader and replicate its own state
+    #[route('/replicate')]
+    log_replicate(content){
+        // recieves the request from the leader and replicate its own state
             
 
 
-        }
+    }
     ```
