@@ -1,11 +1,22 @@
 use actix_cors::Cors;
-use actix_web::{App, HttpResponse, HttpServer, web};
+use actix_web::{App, Error, HttpResponse, HttpServer, web};
 use raft_db::database::command::Command;
 use raft_db::database::raft::log::Log;
+use raft_db::database::raft::roles::Role;
+use raft_db::role_server;
+
 use raft_db::database::table::{Table, TableOut};
 use raft_db::grpc;
+use serde::Serialize;
 use std::env;
 use std::sync::{Arc, Mutex};
+
+#[derive(Serialize)]
+struct NodeInfo {
+    role: String,
+    log: Log,
+}
+
 async fn get_all_values(data: web::Data<Mutex<Table>>) -> web::Json<TableOut> {
     let table = data.lock().unwrap();
     web::Json(table.get_all_values())
@@ -13,6 +24,13 @@ async fn get_all_values(data: web::Data<Mutex<Table>>) -> web::Json<TableOut> {
 
 async fn get_log(data: web::Data<Mutex<Log>>) -> web::Json<Log> {
     web::Json(data.lock().unwrap().clone())
+}
+
+async fn get_info(log: web::Data<Mutex<Log>>, role: web::Data<Role>) -> web::Json<NodeInfo> {
+    web::Json(NodeInfo {
+        role: (**role).as_str().to_string(),
+        log: log.lock().unwrap().clone(),
+    })
 }
 
 async fn check_health() -> HttpResponse {
@@ -23,7 +41,13 @@ async fn process_command(
     data: web::Data<Mutex<Table>>,
     log: web::Data<Mutex<Log>>,
     cmd: web::Json<Command>,
-) -> HttpResponse {
+    role: web::Data<Role>,
+) -> Result<HttpResponse, Error> {
+    if **role == Role::Undefined {
+        return Err(actix_web::error::ErrorServiceUnavailable(
+            "role is not assigned yet",
+        ));
+    }
     let command = cmd.into_inner();
 
     {
@@ -50,7 +74,7 @@ async fn process_command(
 
     log.lock().unwrap().append(0, command);
 
-    HttpResponse::Ok().finish()
+    Ok(HttpResponse::Ok().finish())
 }
 
 #[tokio::main]
@@ -63,6 +87,8 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or_else(|_| (port + 1000).to_string())
         .parse()
         .expect("GRPC_PORT must be a valid number");
+    let role_server_address =
+        env::var("ROLE_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:5000".to_string());
     let peers = web::Data::new(
         env::var("PEERS")
             .unwrap_or_default()
@@ -74,6 +100,12 @@ async fn main() -> std::io::Result<()> {
 
     let database = web::Data::new(Mutex::new(Table::init_table("my_table".to_string())));
     let log = Arc::new(Mutex::new(Log::new_log()));
+    let instance_role = role_server::request_role(format!("node-{port}"), role_server_address)
+        .await
+        .unwrap_or_else(|_| Role::Undefined);
+
+    // when the server starts, it should send  grpc request to a server to gain role .
+
     let log_data = web::Data::from(log.clone());
     grpc::start_server(log.clone(), grpc_port);
 
@@ -96,8 +128,10 @@ async fn main() -> std::io::Result<()> {
             .app_data(database.clone())
             .app_data(log_data.clone())
             .app_data(peers.clone())
+            .app_data(web::Data::new(instance_role))
             .route("/values", web::get().to(get_all_values))
             .route("/log", web::get().to(get_log))
+            .route("/info", web::get().to(get_info))
             .route("/cluster/logs", web::get().to(grpc::get_cluster_logs))
             .route("/command", web::post().to(process_command))
             .route("/health", web::get().to(check_health))
