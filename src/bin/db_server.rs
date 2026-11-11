@@ -1,13 +1,11 @@
 use actix_cors::Cors;
-use actix_web::{web, App, HttpResponse, HttpServer};
-use raft_db::database::table::{self, Table, TableOut};
+use actix_web::{App, HttpResponse, HttpServer, web};
 use raft_db::database::command::Command;
+use raft_db::database::table::{Table, TableOut};
 use std::env;
 use std::sync::Mutex;
 
-async fn get_all_values(
-    data: web::Data<Mutex<Table>>,
-) -> web::Json<TableOut> {
+async fn get_all_values(data: web::Data<Mutex<Table>>) -> web::Json<TableOut> {
     let table = data.lock().unwrap();
     web::Json(table.get_all_values())
 }
@@ -16,17 +14,20 @@ async fn check_health() -> HttpResponse {
     HttpResponse::Ok().body("UP AND RUNNING")
 }
 
-async fn process_command(
-    data: web::Data<Mutex<Table>>,
-    cmd: web::Json<Command>,
-) -> HttpResponse {
+async fn process_command(data: web::Data<Mutex<Table>>, cmd: web::Json<Command>) -> HttpResponse {
     let mut table = data.lock().unwrap();
 
     match cmd.into_inner() {
-        Command::CreateTable { table_id: _, table_name } => {
+        Command::CreateTable {
+            table_id: _,
+            table_name,
+        } => {
             *table = Table::init_table(table_name);
         }
-        Command::Insert { table_id: _, schema } => {
+        Command::Insert {
+            table_id: _,
+            schema,
+        } => {
             table.append_values(schema);
         }
         Command::Delete { table_id: _, id } => {
@@ -43,10 +44,9 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or_else(|_| "3000".to_string())
         .parse()
         .expect("PORT must be a valid number");
-
-    let database = web::Data::new(Mutex::new(Table::init_table(
-        "my_table".to_string(),
-    )));
+    // one global instance of a Database Table
+    // is modified using the function process_command
+    let database = web::Data::new(Mutex::new(Table::init_table("my_table".to_string())));
 
     HttpServer::new(move || {
         App::new()
