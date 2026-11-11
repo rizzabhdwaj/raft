@@ -56,8 +56,10 @@ async fn main() -> std::io::Result<()> {
         .expect("PORT must be a valid number");
 
     let database = web::Data::new(Mutex::new(Table::init_table("my_table".to_string())));
-
     let log = web::Data::new(Mutex::new(Log::new_log()));
+    // web::Data is used to share state across the application without creating a seperate instance
+    // web:Data uses Arc
+    // Mutex::new -> Thread safe Arc -> Shared ownership of the Thread safe data
 
     HttpServer::new(move || {
         App::new()
