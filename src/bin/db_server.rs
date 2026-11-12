@@ -37,19 +37,12 @@ async fn check_health() -> HttpResponse {
     HttpResponse::Ok().body("UP AND RUNNING")
 }
 
+// Leader will call this function through GRPC for all the follower node's to update the log
 async fn process_command(
     data: web::Data<Mutex<Table>>,
     log: web::Data<Mutex<Log>>,
     cmd: web::Json<Command>,
-    role: web::Data<Role>,
-) -> Result<HttpResponse, Error> {
-    if **role == Role::Undefined {
-        return Err(actix_web::error::ErrorServiceUnavailable(
-            "role is not assigned yet",
-        ));
-    }
-    let command = cmd.into_inner();
-
+) -> Result<(), Error> {
     {
         let mut table = data.lock().unwrap();
 
@@ -73,6 +66,26 @@ async fn process_command(
     }
 
     log.lock().unwrap().append(0, command);
+    Ok(())
+}
+
+async fn leader_process(
+    data: web::Data<Mutex<Table>>,
+    log: web::Data<Mutex<Log>>,
+    cmd: web::Json<Command>,
+    role: web::Data<Role>,
+) -> Result<HttpResponse, Error> {
+    if **role == Role::Undefined {
+        return Err(actix_web::error::ErrorServiceUnavailable(
+            "role is not assigned yet",
+        ));
+    }
+    let command = cmd.into_inner();
+    let res = process_command(data, log, cmd);
+    if res.await.is_ok() {
+        // broadcast through grpc
+        //
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
