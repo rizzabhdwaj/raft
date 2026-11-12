@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+
+
+package raftlog;
+
+message CommandRequest {
+  string command_json = 1;
+  uint64 term = 2;
+}
+
+message CommandResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+service LogService {
+  rpc GetLog(Empty) returns (LogResponse);
+  rpc ApplyCommand(CommandRequest) returns (CommandResponse);
+}
+
