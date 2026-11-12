@@ -68,7 +68,13 @@ async fn process_command(
     log.lock().unwrap().append(0, command);
     Ok(())
 }
-
+pub async fn broadcast_command(peers: &[String], command: &Command) {
+    for peer in peers {
+        if let Err(error) = send_command(peer.clone(), command).await {
+            eprintln!("failed to send command to {peer}: {error}");
+        }
+    }
+}
 async fn leader_process(
     data: web::Data<Mutex<Table>>,
     log: web::Data<Mutex<Log>>,

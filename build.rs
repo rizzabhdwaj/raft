@@ -1,5 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::compile_protos("proto/log.proto")?;
+    tonic_build::compile_protos("proto/cmd.proto")?;
     tonic_build::compile_protos("proto/role.proto")?;
     Ok(())
 }

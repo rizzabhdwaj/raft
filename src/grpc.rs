@@ -1,5 +1,6 @@
 use crate::database::raft::log::Log;
 use actix_web::{HttpResponse, web};
+use database::raft::command::Command;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
@@ -103,4 +104,23 @@ pub fn start_server(log: Arc<Mutex<Log>>, port: u16) {
             eprintln!("gRPC server stopped: {error}");
         }
     });
+}
+
+pub async fn send_command(
+    address: String,
+    command: Command,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))?
+        .connect()
+        .await?;
+    let mut client = proto::log_service_client::LogServiceClient::new(channel);
+
+    client
+        .apply_command(proto::CommandRequest {
+            command_json: serde_json::to_string(command)?,
+            term: 0,
+        })
+        .await?;
+
+    Ok(())
 }
