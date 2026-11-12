@@ -14,3 +14,22 @@ message RoleResponse {
 service RoleService {
   rpc AssignRole(AssignRoleRequest) returns (RoleResponse);
 }
+
+message PeerInfo {
+  string node_id = 1;
+  string http_address = 2;
+  string grpc_address = 3;
+  string role = 4;
+}
+
+message BroadcastPeerRequest {
+  PeerInfo peer = 1;
+}
+
+message BroadcastPeerResponse {
+  bool success = 1;
+}
+
+service PeerService {
+  rpc BroadcastPeer(BroadcastPeerRequest) returns (BroadcastPeerResponse);
+}

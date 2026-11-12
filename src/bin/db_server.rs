@@ -1,7 +1,9 @@
 use actix_cors::Cors;
 use actix_web::{App, Error, HttpResponse, HttpServer, web};
 use raft_db::database::command::Command;
+use raft_db::database::commands::apply_command;
 use raft_db::database::raft::log::Log;
+use raft_db::database::raft::peers::{Peer, PeerRegistry};
 use raft_db::database::raft::roles::Role;
 use raft_db::role_server;
 
@@ -41,57 +43,31 @@ async fn check_health() -> HttpResponse {
 async fn process_command(
     data: web::Data<Mutex<Table>>,
     log: web::Data<Mutex<Log>>,
-    cmd: web::Json<Command>,
+    command: Command,
 ) -> Result<(), Error> {
-    {
-        let mut table = data.lock().unwrap();
-
-        match &command {
-            Command::CreateTable {
-                table_id: _,
-                table_name,
-            } => {
-                *table = Table::init_table(table_name.clone());
-            }
-            Command::Insert {
-                table_id: _,
-                schema,
-            } => {
-                table.append_values(schema.clone());
-            }
-            Command::Delete { table_id: _, id } => {
-                table.delete_values(*id);
-            }
-        }
-    }
-
-    log.lock().unwrap().append(0, command);
+    let mut table = data.lock().unwrap();
+    let mut log = log.lock().unwrap();
+    apply_command(&mut table, &mut log, command);
     Ok(())
 }
-pub async fn broadcast_command(peers: &[String], command: &Command) {
-    for peer in peers {
-        if let Err(error) = send_command(peer.clone(), command).await {
-            eprintln!("failed to send command to {peer}: {error}");
-        }
-    }
-}
+
 async fn leader_process(
     data: web::Data<Mutex<Table>>,
     log: web::Data<Mutex<Log>>,
     cmd: web::Json<Command>,
     role: web::Data<Role>,
+    peers: web::Data<Vec<String>>,
+    self_address: web::Data<String>,
 ) -> Result<HttpResponse, Error> {
-    if **role == Role::Undefined {
-        return Err(actix_web::error::ErrorServiceUnavailable(
-            "role is not assigned yet",
+    if **role != Role::Leader {
+        return Err(actix_web::error::ErrorForbidden(
+            "only the leader can process commands",
         ));
     }
+
     let command = cmd.into_inner();
-    let res = process_command(data, log, cmd);
-    if res.await.is_ok() {
-        // broadcast through grpc
-        //
-    }
+    process_command(data, log, command.clone()).await?;
+    grpc::broadcast_command(peers.get_ref(), self_address.get_ref(), &command).await;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -117,16 +93,37 @@ async fn main() -> std::io::Result<()> {
             .collect::<Vec<_>>(),
     );
 
-    let database = web::Data::new(Mutex::new(Table::init_table("my_table".to_string())));
+    let database = Arc::new(Mutex::new(Table::init_table("my_table".to_string())));
     let log = Arc::new(Mutex::new(Log::new_log()));
+    let peer_registry = Arc::new(Mutex::new(PeerRegistry::from_env(
+        &env::var("PEER_INFO").unwrap_or_default(),
+    )));
     let instance_role = role_server::request_role(format!("node-{port}"), role_server_address)
         .await
         .unwrap_or_else(|_| Role::Undefined);
+    let own_peer = Peer {
+        node_id: format!("node-{port}"),
+        http_address: format!("127.0.0.1:{port}"),
+        grpc_address: format!("127.0.0.1:{grpc_port}"),
+        role: instance_role,
+    };
+    peer_registry.lock().unwrap().upsert(own_peer.clone());
 
     // when the server starts, it should send  grpc request to a server to gain role .
 
     let log_data = web::Data::from(log.clone());
-    grpc::start_server(log.clone(), grpc_port);
+    let database_data = web::Data::from(database.clone());
+    grpc::start_server(database.clone(), log.clone(), peer_registry.clone(), grpc_port);
+
+    let targets = peer_registry.lock().unwrap().all();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        for peer in targets {
+            if peer.node_id != own_peer.node_id {
+                let _ = grpc::broadcast_peer(peer.grpc_address.clone(), own_peer.clone()).await;
+            }
+        }
+    });
 
     /*
         let monitor_database = database.clone();
@@ -144,15 +141,17 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .wrap(Cors::permissive())
-            .app_data(database.clone())
+            .app_data(database_data.clone())
             .app_data(log_data.clone())
             .app_data(peers.clone())
+            .app_data(web::Data::new(peer_registry.clone()))
             .app_data(web::Data::new(instance_role))
+            .app_data(web::Data::new(format!("127.0.0.1:{grpc_port}")))
             .route("/values", web::get().to(get_all_values))
             .route("/log", web::get().to(get_log))
             .route("/info", web::get().to(get_info))
             .route("/cluster/logs", web::get().to(grpc::get_cluster_logs))
-            .route("/command", web::post().to(process_command))
+            .route("/command", web::post().to(leader_process))
             .route("/health", web::get().to(check_health))
             .route("/health", web::post().to(check_health))
     })

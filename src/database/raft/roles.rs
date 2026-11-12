@@ -1,4 +1,6 @@
-#[derive(Clone, Copy, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Role {
     Leader,
     Candidate,
