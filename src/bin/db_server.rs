@@ -58,11 +58,24 @@ async fn leader_process(
     role: web::Data<Role>,
     peers: web::Data<Vec<String>>,
     self_address: web::Data<String>,
+    peer_registry: web::Data<Mutex<PeerRegistry>>,
 ) -> Result<HttpResponse, Error> {
-    if **role != Role::Leader {
-        return Err(actix_web::error::ErrorForbidden(
-            "only the leader can process commands",
+    if **role == Role::Undefined {
+        return Err(actix_web::error::ErrorServiceUnavailable(
+            "role is not assigned yet",
         ));
+    }
+
+    if **role != Role::Leader {
+        let leader = peer_registry
+            .lock()
+            .unwrap()
+            .leader()
+            .ok_or_else(|| actix_web::error::ErrorServiceUnavailable("leader is unknown"))?;
+
+        return Ok(HttpResponse::TemporaryRedirect()
+            .insert_header(("Location", format!("http://{}/command", leader.http_address)))
+            .finish());
     }
 
     let command = cmd.into_inner();
@@ -144,7 +157,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(database_data.clone())
             .app_data(log_data.clone())
             .app_data(peers.clone())
-            .app_data(web::Data::new(peer_registry.clone()))
+            .app_data(web::Data::from(peer_registry.clone()))
             .app_data(web::Data::new(instance_role))
             .app_data(web::Data::new(format!("127.0.0.1:{grpc_port}")))
             .route("/values", web::get().to(get_all_values))

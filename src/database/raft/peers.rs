@@ -41,4 +41,11 @@ impl PeerRegistry {
     pub fn all(&self) -> Vec<Peer> {
         self.peers.values().cloned().collect()
     }
+
+    pub fn leader(&self) -> Option<Peer> {
+        self.peers
+            .values()
+            .find(|peer| peer.role == Role::Leader)
+            .cloned()
+    }
 }
