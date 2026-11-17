@@ -1,9 +1,11 @@
-use crate::raft::log::Log;
-use crate::raft::peers::{Peer, PeerRegistry};
+use crate::database::command::Command;
 use crate::database::commands::apply_command;
 use crate::database::table::Table;
+use crate::raft::log::Log;
+use crate::raft::peers::{Peer, PeerRegistry};
+use crate::raft::roles::Role;
+use crate::raft::voting::NodeState;
 use actix_web::{HttpResponse, web};
-use crate::database::command::Command;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
@@ -21,9 +23,39 @@ pub mod peer_proto {
 mod tests {
     use super::*;
     use peer_proto::peer_service_server::PeerService as _;
+    use proto::log_service_server::LogService as _;
 
     #[tokio::test]
-    async fn peer_announcement_preserves_sender_timeout() {
+    async fn nonleaders_refuse_proposals() {
+        for role in [Role::Follower, Role::Candidate, Role::Undefined] {
+            let service = LogService {
+                table: Arc::new(Mutex::new(Table::init_table("test".to_string()))),
+                log: Arc::new(Mutex::new(Log::new_log())),
+                state: Arc::new(Mutex::new(NodeState {
+                    role,
+                    ..NodeState::new()
+                })),
+                peers: vec![],
+                self_address: String::new(),
+            };
+            let error = service
+                .propose_command(Request::new(proto::CommandRequest {
+                    command_json: serde_json::to_string(&Command::CreateTable {
+                        table_id: 1,
+                        table_name: "rejected".to_string(),
+                    })
+                    .unwrap(),
+                    term: 0,
+                }))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+            assert!(service.log.lock().unwrap().content.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_announcement_preserves_identity_and_role() {
         let registry = Arc::new(Mutex::new(PeerRegistry::from_env(
             "node-3000|127.0.0.1:3000|127.0.0.1:4000",
         )));
@@ -38,7 +70,6 @@ mod tests {
                     http_address: "127.0.0.1:3000".to_string(),
                     grpc_address: "127.0.0.1:4000".to_string(),
                     role: "Follower".to_string(),
-                    heartbeat_timeout_ms: 183,
                 }),
             }))
             .await
@@ -47,10 +78,7 @@ mod tests {
         let peers = registry.lock().unwrap().all();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "node-3000");
-        assert_eq!(
-            peers[0].heartbeat_timeout,
-            std::time::Duration::from_millis(183)
-        );
+        assert_eq!(peers[0].role, Role::Follower);
     }
 }
 
@@ -58,6 +86,9 @@ mod tests {
 pub struct LogService {
     pub table: Arc<Mutex<Table>>,
     pub log: Arc<Mutex<Log>>,
+    pub state: Arc<Mutex<NodeState>>,
+    pub peers: Vec<String>,
+    pub self_address: String,
 }
 
 #[derive(Clone)]
@@ -80,6 +111,43 @@ pub struct PeerEntry {
 
 #[tonic::async_trait]
 impl proto::log_service_server::LogService for LogService {
+    async fn heartbeat(
+        &self,
+        request: Request<proto::HeartbeatRequest>,
+    ) -> Result<Response<proto::Empty>, Status> {
+        crate::raft::voting::receive_heartbeat(&self.state, request.into_inner())?;
+        Ok(Response::new(proto::Empty {}))
+    }
+
+    async fn propose_command(
+        &self,
+        request: Request<proto::CommandRequest>,
+    ) -> Result<Response<proto::CommandResponse>, Status> {
+        if self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("node state lock poisoned"))?
+            .role
+            != Role::Leader
+        {
+            return Err(Status::failed_precondition("node is not the leader"));
+        }
+        let command = serde_json::from_str(&request.into_inner().command_json)
+            .map_err(|_| Status::invalid_argument("invalid command"))?;
+        apply_and_broadcast(
+            &self.table,
+            &self.log,
+            &self.peers,
+            &self.self_address,
+            command,
+        )
+        .await?;
+        Ok(Response::new(proto::CommandResponse {
+            success: true,
+            message: "command applied".to_string(),
+        }))
+    }
+
     async fn get_log(
         &self,
         _request: Request<proto::Empty>,
@@ -110,8 +178,14 @@ impl proto::log_service_server::LogService for LogService {
     ) -> Result<Response<proto::CommandResponse>, Status> {
         let command = serde_json::from_str(&request.into_inner().command_json)
             .map_err(|_| Status::invalid_argument("invalid command"))?;
-        let mut table = self.table.lock().map_err(|_| Status::internal("table lock poisoned"))?;
-        let mut log = self.log.lock().map_err(|_| Status::internal("log lock poisoned"))?;
+        let mut table = self
+            .table
+            .lock()
+            .map_err(|_| Status::internal("table lock poisoned"))?;
+        let mut log = self
+            .log
+            .lock()
+            .map_err(|_| Status::internal("log lock poisoned"))?;
         apply_command(&mut table, &mut log, command);
 
         Ok(Response::new(proto::CommandResponse {
@@ -137,12 +211,11 @@ impl peer_proto::peer_service_server::PeerService for PeerService {
             peer.http_address,
             peer.grpc_address,
             crate::raft::roles::Role::from_str(&peer.role),
-            peer.heartbeat_timeout_ms,
         ));
 
-        Ok(Response::new(
-            peer_proto::BroadcastPeerResponse { success: true },
-        ))
+        Ok(Response::new(peer_proto::BroadcastPeerResponse {
+            success: true,
+        }))
     }
 }
 
@@ -183,22 +256,13 @@ pub async fn get_cluster_logs(peers: web::Data<Vec<String>>) -> HttpResponse {
     HttpResponse::Ok().json(logs)
 }
 
-pub fn start_server(
-    table: Arc<Mutex<Table>>,
-    log: Arc<Mutex<Log>>,
-    peers: Arc<Mutex<PeerRegistry>>,
-    port: u16,
-) {
+pub fn start_server(service: LogService, peers: Arc<Mutex<PeerRegistry>>, port: u16) {
     tokio::spawn(async move {
         let server = Server::builder()
-            .add_service(proto::log_service_server::LogServiceServer::new(
-                LogService { table, log },
+            .add_service(proto::log_service_server::LogServiceServer::new(service))
+            .add_service(peer_proto::peer_service_server::PeerServiceServer::new(
+                PeerService { registry: peers },
             ))
-            .add_service(
-                peer_proto::peer_service_server::PeerServiceServer::new(
-                    PeerService { registry: peers },
-                ),
-            )
             .serve(([0, 0, 0, 0], port).into());
 
         if let Err(error) = server.await {
@@ -222,7 +286,6 @@ pub async fn broadcast_peer(address: String, peer: Peer) -> Result<(), Status> {
                 http_address: peer.http_address,
                 grpc_address: peer.grpc_address,
                 role: peer.role.as_str().to_string(),
-                heartbeat_timeout_ms: peer.heartbeat_timeout.as_millis() as u64,
             }),
         })
         .await
@@ -240,6 +303,47 @@ pub async fn broadcast_command(peers: &[String], self_address: &str, command: &C
             eprintln!("failed to send command to {peer}: {error}");
         }
     }
+}
+
+pub async fn apply_and_broadcast(
+    table: &Mutex<Table>,
+    log: &Mutex<Log>,
+    peers: &[String],
+    self_address: &str,
+    command: Command,
+) -> Result<(), Status> {
+    {
+        let mut table = table
+            .lock()
+            .map_err(|_| Status::internal("table lock poisoned"))?;
+        let mut log = log
+            .lock()
+            .map_err(|_| Status::internal("log lock poisoned"))?;
+        apply_command(&mut table, &mut log, command.clone());
+    }
+    broadcast_command(peers, self_address, &command).await;
+    Ok(())
+}
+
+pub async fn propose_command(address: &str, command: &Command) -> Result<(), Status> {
+    let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))
+        .map_err(|error| Status::internal(error.to_string()))?
+        .connect()
+        .await
+        .map_err(|error| Status::unavailable(error.to_string()))?;
+    let mut client = proto::log_service_client::LogServiceClient::new(channel);
+    let response = client
+        .propose_command(proto::CommandRequest {
+            command_json: serde_json::to_string(command)
+                .map_err(|error| Status::internal(error.to_string()))?,
+            term: 0,
+        })
+        .await?
+        .into_inner();
+    if !response.success {
+        return Err(Status::failed_precondition(response.message));
+    }
+    Ok(())
 }
 
 pub async fn send_command(

@@ -1,11 +1,10 @@
 use actix_cors::Cors;
 use actix_web::{App, Error, HttpResponse, HttpServer, web};
 use raft_db::database::command::Command;
-use raft_db::database::commands::apply_command;
 use raft_db::raft::log::Log;
-use raft_db::raft::peers::{MAX_DUR_MS, MIN_DUR_MS, Peer, PeerRegistry};
-use rand::Rng;
+use raft_db::raft::peers::{Peer, PeerRegistry};
 use raft_db::raft::roles::Role;
+use raft_db::raft::voting::{NodeState, run_heartbeats};
 
 use raft_db::database::table::{Table, TableOut};
 use raft_db::grpc;
@@ -28,9 +27,12 @@ async fn get_log(data: web::Data<Mutex<Log>>) -> web::Json<Log> {
     web::Json(data.lock().unwrap().clone())
 }
 
-async fn get_info(log: web::Data<Mutex<Log>>, role: web::Data<Role>) -> web::Json<NodeInfo> {
+async fn get_info(
+    log: web::Data<Mutex<Log>>,
+    state: web::Data<Mutex<NodeState>>,
+) -> web::Json<NodeInfo> {
     web::Json(NodeInfo {
-        role: (**role).as_str().to_string(),
+        role: state.lock().unwrap().role.as_str().to_string(),
         log: log.lock().unwrap().clone(),
     })
 }
@@ -39,48 +41,39 @@ async fn check_health() -> HttpResponse {
     HttpResponse::Ok().body("UP AND RUNNING")
 }
 
-// Leader will call this function through GRPC for all the follower node's to update the log
-async fn process_command(
-    data: web::Data<Mutex<Table>>,
-    log: web::Data<Mutex<Log>>,
-    command: Command,
-) -> Result<(), Error> {
-    let mut table = data.lock().unwrap();
-    let mut log = log.lock().unwrap();
-    apply_command(&mut table, &mut log, command);
-    Ok(())
-}
-
 async fn leader_process(
     data: web::Data<Mutex<Table>>,
     log: web::Data<Mutex<Log>>,
     cmd: web::Json<Command>,
-    role: web::Data<Role>,
+    state: web::Data<Mutex<NodeState>>,
     peers: web::Data<Vec<String>>,
     self_address: web::Data<String>,
     peer_registry: web::Data<Mutex<PeerRegistry>>,
 ) -> Result<HttpResponse, Error> {
-    if **role == Role::Undefined {
+    let role = state.lock().unwrap().role;
+    if role == Role::Undefined {
         return Err(actix_web::error::ErrorServiceUnavailable(
             "role is not assigned yet",
         ));
     }
 
-    if **role != Role::Leader {
+    if role != Role::Leader {
         let leader = peer_registry
             .lock()
             .unwrap()
             .leader()
             .ok_or_else(|| actix_web::error::ErrorServiceUnavailable("leader is unknown"))?;
 
-        return Ok(HttpResponse::TemporaryRedirect()
-            .insert_header(("Location", format!("http://{}/command", leader.http_address)))
-            .finish());
+        grpc::propose_command(&leader.grpc_address, &cmd.into_inner())
+            .await
+            .map_err(actix_web::error::ErrorBadGateway)?;
+        return Ok(HttpResponse::Ok().finish());
     }
 
     let command = cmd.into_inner();
-    process_command(data, log, command.clone()).await?;
-    grpc::broadcast_command(peers.get_ref(), self_address.get_ref(), &command).await;
+    grpc::apply_and_broadcast(&data, &log, &peers, &self_address, command)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -109,19 +102,35 @@ async fn main() -> std::io::Result<()> {
     let peer_registry = Arc::new(Mutex::new(PeerRegistry::from_env(
         &env::var("PEER_INFO").unwrap_or_default(),
     )));
-    let instance_role = Role::Follower;
+    let state = Arc::new(Mutex::new(NodeState::new()));
     let own_peer = Peer::new(
         format!("node-{port}"),
         format!("127.0.0.1:{port}"),
         format!("127.0.0.1:{grpc_port}"),
-        instance_role,
-        rand::thread_rng().gen_range(MIN_DUR_MS..=MAX_DUR_MS),
+        state.lock().unwrap().role,
     );
     peer_registry.lock().unwrap().upsert(own_peer.clone());
 
     let log_data = web::Data::from(log.clone());
     let database_data = web::Data::from(database.clone());
-    grpc::start_server(database.clone(), log.clone(), peer_registry.clone(), grpc_port);
+    grpc::start_server(
+        grpc::LogService {
+            table: database.clone(),
+            log: log.clone(),
+            state: state.clone(),
+            peers: peers.get_ref().clone(),
+            self_address: own_peer.grpc_address.clone(),
+        },
+        peer_registry.clone(),
+        grpc_port,
+    );
+
+    tokio::spawn(run_heartbeats(
+        state.clone(),
+        peer_registry.clone(),
+        peers.get_ref().clone(),
+        own_peer.grpc_address.clone(),
+    ));
 
     let targets = peer_registry.lock().unwrap().all();
     tokio::spawn(async move {
@@ -153,7 +162,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(log_data.clone())
             .app_data(peers.clone())
             .app_data(web::Data::from(peer_registry.clone()))
-            .app_data(web::Data::new(instance_role))
+            .app_data(web::Data::from(state.clone()))
             .app_data(web::Data::new(format!("127.0.0.1:{grpc_port}")))
             .route("/values", web::get().to(get_all_values))
             .route("/log", web::get().to(get_log))
@@ -166,4 +175,115 @@ async fn main() -> std::io::Result<()> {
     .bind(("0.0.0.0", port))?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{http::StatusCode, test};
+
+    async fn serve(
+        role: Role,
+        peers: Vec<String>,
+    ) -> (grpc::LogService, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let service = grpc::LogService {
+            table: Arc::new(Mutex::new(Table::init_table("test".to_string()))),
+            log: Arc::new(Mutex::new(Log::new_log())),
+            state: Arc::new(Mutex::new(NodeState {
+                role,
+                ..NodeState::new()
+            })),
+            peers,
+            self_address: listener.local_addr().unwrap().to_string(),
+        };
+        let server_service = service.clone();
+        let task = tokio::spawn(async move {
+            let incoming = futures_util::stream::unfold(listener, |listener| async {
+                Some((listener.accept().await.map(|(socket, _)| socket), listener))
+            });
+            tonic::transport::Server::builder()
+                .add_service(grpc::proto::log_service_server::LogServiceServer::new(
+                    server_service,
+                ))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        (service, task)
+    }
+
+    async fn post_command(leader_address: Option<String>) -> (StatusCode, String, usize) {
+        let registry = web::Data::new(Mutex::new(PeerRegistry::default()));
+        if let Some(address) = leader_address {
+            registry.lock().unwrap().upsert(Peer::new(
+                "leader".to_string(),
+                "unused-http-address".to_string(),
+                address,
+                Role::Leader,
+            ));
+        }
+        let log = web::Data::new(Mutex::new(Log::new_log()));
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(Mutex::new(Table::init_table(
+                    "test".to_string(),
+                ))))
+                .app_data(log.clone())
+                .app_data(web::Data::new(Mutex::new(NodeState::new())))
+                .app_data(web::Data::new(Vec::<String>::new()))
+                .app_data(web::Data::new(String::new()))
+                .app_data(registry)
+                .route("/command", web::post().to(leader_process)),
+        )
+        .await;
+        let request = test::TestRequest::post()
+            .uri("/command")
+            .set_json(Command::CreateTable {
+                table_id: 1,
+                table_name: "forwarded".to_string(),
+            })
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        let status = response.status();
+        assert!(!response.headers().contains_key("Location"));
+        let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+        let entries = log.lock().unwrap().content.len();
+        (status, body, entries)
+    }
+
+    #[actix_web::test]
+    async fn unknown_leader_still_returns_service_unavailable() {
+        let (status, body, entries) = post_command(None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body, "leader is unknown");
+        assert_eq!(entries, 0);
+    }
+
+    #[actix_web::test]
+    async fn follower_forwards_proposal_and_leader_broadcasts() {
+        let (replica, replica_task) = serve(Role::Follower, vec![]).await;
+        let (leader, leader_task) = serve(Role::Leader, vec![replica.self_address.clone()]).await;
+        let (status, _, entries) = post_command(Some(leader.self_address.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(entries, 0);
+        for service in [&leader, &replica] {
+            let log = service.log.lock().unwrap();
+            assert_eq!(log.content.len(), 1);
+            assert!(matches!(&log.content[0].command,
+                Command::CreateTable { table_id: 1, table_name } if table_name == "forwarded"));
+        }
+        leader_task.abort();
+        replica_task.abort();
+    }
+
+    #[actix_web::test]
+    async fn stale_leader_returns_bad_gateway_without_applying() {
+        let (service, task) = serve(Role::Follower, vec![]).await;
+        let (status, _, entries) = post_command(Some(service.self_address.clone())).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(entries, 0);
+        assert!(service.log.lock().unwrap().content.is_empty());
+        task.abort();
+    }
 }

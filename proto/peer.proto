@@ -7,7 +7,8 @@ message PeerInfo {
   string http_address = 2;
   string grpc_address = 3;
   string role = 4;
-  uint64 heartbeat_timeout_ms = 5;
+  reserved 5;
+  reserved "heartbeat_timeout_ms";
 }
 
 message BroadcastPeerRequest {
