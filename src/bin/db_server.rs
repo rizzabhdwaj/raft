@@ -2,10 +2,9 @@ use actix_cors::Cors;
 use actix_web::{App, Error, HttpResponse, HttpServer, web};
 use raft_db::database::command::Command;
 use raft_db::database::commands::apply_command;
-use raft_db::database::raft::log::Log;
-use raft_db::database::raft::peers::{Peer, PeerRegistry};
-use raft_db::database::raft::roles::Role;
-use raft_db::role_server;
+use raft_db::raft::log::Log;
+use raft_db::raft::peers::{Peer, PeerRegistry};
+use raft_db::raft::roles::Role;
 
 use raft_db::database::table::{Table, TableOut};
 use raft_db::grpc;
@@ -95,8 +94,6 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or_else(|_| (port + 1000).to_string())
         .parse()
         .expect("GRPC_PORT must be a valid number");
-    let role_server_address =
-        env::var("ROLE_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:5000".to_string());
     let peers = web::Data::new(
         env::var("PEERS")
             .unwrap_or_default()
@@ -111,9 +108,7 @@ async fn main() -> std::io::Result<()> {
     let peer_registry = Arc::new(Mutex::new(PeerRegistry::from_env(
         &env::var("PEER_INFO").unwrap_or_default(),
     )));
-    let instance_role = role_server::request_role(format!("node-{port}"), role_server_address)
-        .await
-        .unwrap_or_else(|_| Role::Undefined);
+    let instance_role = Role::Follower;
     let own_peer = Peer {
         node_id: format!("node-{port}"),
         http_address: format!("127.0.0.1:{port}"),
@@ -121,8 +116,6 @@ async fn main() -> std::io::Result<()> {
         role: instance_role,
     };
     peer_registry.lock().unwrap().upsert(own_peer.clone());
-
-    // when the server starts, it should send  grpc request to a server to gain role .
 
     let log_data = web::Data::from(log.clone());
     let database_data = web::Data::from(database.clone());

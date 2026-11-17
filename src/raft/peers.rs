@@ -1,4 +1,4 @@
-use crate::database::raft::roles::Role;
+use crate::raft::roles::Role;
 use serde::Serialize;
 use std::collections::HashMap;
 

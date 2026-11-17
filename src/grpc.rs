@@ -1,5 +1,5 @@
-use crate::database::raft::log::Log;
-use crate::database::raft::peers::{Peer, PeerRegistry};
+use crate::raft::log::Log;
+use crate::raft::peers::{Peer, PeerRegistry};
 use crate::database::commands::apply_command;
 use crate::database::table::Table;
 use actix_web::{HttpResponse, web};
@@ -11,6 +11,10 @@ use tonic::{Request, Response, Status};
 
 pub mod proto {
     tonic::include_proto!("raftlog");
+}
+
+pub mod peer_proto {
+    tonic::include_proto!("raftpeer");
 }
 
 #[derive(Clone)]
@@ -81,11 +85,11 @@ impl proto::log_service_server::LogService for LogService {
 }
 
 #[tonic::async_trait]
-impl crate::role_server::proto::peer_service_server::PeerService for PeerService {
+impl peer_proto::peer_service_server::PeerService for PeerService {
     async fn broadcast_peer(
         &self,
-        request: Request<crate::role_server::proto::BroadcastPeerRequest>,
-    ) -> Result<Response<crate::role_server::proto::BroadcastPeerResponse>, Status> {
+        request: Request<peer_proto::BroadcastPeerRequest>,
+    ) -> Result<Response<peer_proto::BroadcastPeerResponse>, Status> {
         let peer = request
             .into_inner()
             .peer
@@ -95,11 +99,11 @@ impl crate::role_server::proto::peer_service_server::PeerService for PeerService
             node_id: peer.node_id,
             http_address: peer.http_address,
             grpc_address: peer.grpc_address,
-            role: crate::database::raft::roles::Role::from_str(&peer.role),
+            role: crate::raft::roles::Role::from_str(&peer.role),
         });
 
         Ok(Response::new(
-            crate::role_server::proto::BroadcastPeerResponse { success: true },
+            peer_proto::BroadcastPeerResponse { success: true },
         ))
     }
 }
@@ -153,7 +157,7 @@ pub fn start_server(
                 LogService { table, log },
             ))
             .add_service(
-                crate::role_server::proto::peer_service_server::PeerServiceServer::new(
+                peer_proto::peer_service_server::PeerServiceServer::new(
                     PeerService { registry: peers },
                 ),
             )
@@ -171,11 +175,11 @@ pub async fn broadcast_peer(address: String, peer: Peer) -> Result<(), Status> {
         .connect()
         .await
         .map_err(|error| Status::unavailable(error.to_string()))?;
-    let mut client = crate::role_server::proto::peer_service_client::PeerServiceClient::new(channel);
+    let mut client = peer_proto::peer_service_client::PeerServiceClient::new(channel);
 
     client
-        .broadcast_peer(crate::role_server::proto::BroadcastPeerRequest {
-            peer: Some(crate::role_server::proto::PeerInfo {
+        .broadcast_peer(peer_proto::BroadcastPeerRequest {
+            peer: Some(peer_proto::PeerInfo {
                 node_id: peer.node_id,
                 http_address: peer.http_address,
                 grpc_address: peer.grpc_address,

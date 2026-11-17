@@ -7,11 +7,11 @@ for port in 3000 3001 3002 3003 3004; do
     echo
 done
 
-echo "Leader values:"
+echo "Node 3000 values:"
 curl -s http://127.0.0.1:3000/values
 echo
 
-echo "Leader log:"
+echo "Node 3000 log:"
 curl -s http://127.0.0.1:3000/log
 echo
 

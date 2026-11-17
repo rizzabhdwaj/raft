@@ -1,19 +1,6 @@
 syntax = "proto3";
 
-package raftrole;
-
-message AssignRoleRequest {
-  string node_id = 1;
-}
-
-message RoleResponse {
-  string node_id = 1;
-  string role = 2;
-}
-
-service RoleService {
-  rpc AssignRole(AssignRoleRequest) returns (RoleResponse);
-}
+package raftpeer;
 
 message PeerInfo {
   string node_id = 1;
