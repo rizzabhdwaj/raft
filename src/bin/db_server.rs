@@ -3,7 +3,8 @@ use actix_web::{App, Error, HttpResponse, HttpServer, web};
 use raft_db::database::command::Command;
 use raft_db::database::commands::apply_command;
 use raft_db::raft::log::Log;
-use raft_db::raft::peers::{Peer, PeerRegistry};
+use raft_db::raft::peers::{MAX_DUR_MS, MIN_DUR_MS, Peer, PeerRegistry};
+use rand::Rng;
 use raft_db::raft::roles::Role;
 
 use raft_db::database::table::{Table, TableOut};
@@ -109,12 +110,13 @@ async fn main() -> std::io::Result<()> {
         &env::var("PEER_INFO").unwrap_or_default(),
     )));
     let instance_role = Role::Follower;
-    let own_peer = Peer {
-        node_id: format!("node-{port}"),
-        http_address: format!("127.0.0.1:{port}"),
-        grpc_address: format!("127.0.0.1:{grpc_port}"),
-        role: instance_role,
-    };
+    let own_peer = Peer::new(
+        format!("node-{port}"),
+        format!("127.0.0.1:{port}"),
+        format!("127.0.0.1:{grpc_port}"),
+        instance_role,
+        rand::thread_rng().gen_range(MIN_DUR_MS..=MAX_DUR_MS),
+    );
     peer_registry.lock().unwrap().upsert(own_peer.clone());
 
     let log_data = web::Data::from(log.clone());

@@ -17,6 +17,43 @@ pub mod peer_proto {
     tonic::include_proto!("raftpeer");
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peer_proto::peer_service_server::PeerService as _;
+
+    #[tokio::test]
+    async fn peer_announcement_preserves_sender_timeout() {
+        let registry = Arc::new(Mutex::new(PeerRegistry::from_env(
+            "node-3000|127.0.0.1:3000|127.0.0.1:4000",
+        )));
+        let service = PeerService {
+            registry: registry.clone(),
+        };
+
+        service
+            .broadcast_peer(Request::new(peer_proto::BroadcastPeerRequest {
+                peer: Some(peer_proto::PeerInfo {
+                    node_id: "node-3000".to_string(),
+                    http_address: "127.0.0.1:3000".to_string(),
+                    grpc_address: "127.0.0.1:4000".to_string(),
+                    role: "Follower".to_string(),
+                    heartbeat_timeout_ms: 183,
+                }),
+            }))
+            .await
+            .unwrap();
+
+        let peers = registry.lock().unwrap().all();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "node-3000");
+        assert_eq!(
+            peers[0].heartbeat_timeout,
+            std::time::Duration::from_millis(183)
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct LogService {
     pub table: Arc<Mutex<Table>>,
@@ -95,12 +132,13 @@ impl peer_proto::peer_service_server::PeerService for PeerService {
             .peer
             .ok_or_else(|| Status::invalid_argument("peer is required"))?;
 
-        self.registry.lock().unwrap().upsert(Peer {
-            node_id: peer.node_id,
-            http_address: peer.http_address,
-            grpc_address: peer.grpc_address,
-            role: crate::raft::roles::Role::from_str(&peer.role),
-        });
+        self.registry.lock().unwrap().upsert(Peer::new(
+            peer.node_id,
+            peer.http_address,
+            peer.grpc_address,
+            crate::raft::roles::Role::from_str(&peer.role),
+            peer.heartbeat_timeout_ms,
+        ));
 
         Ok(Response::new(
             peer_proto::BroadcastPeerResponse { success: true },
@@ -184,6 +222,7 @@ pub async fn broadcast_peer(address: String, peer: Peer) -> Result<(), Status> {
                 http_address: peer.http_address,
                 grpc_address: peer.grpc_address,
                 role: peer.role.as_str().to_string(),
+                heartbeat_timeout_ms: peer.heartbeat_timeout.as_millis() as u64,
             }),
         })
         .await
