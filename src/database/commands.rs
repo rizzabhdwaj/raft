@@ -1,8 +1,8 @@
 use crate::database::command::Command;
-use crate::raft::log::Log;
 use crate::database::table::Table;
+use crate::raft::log::Log;
 
-pub fn apply_command(table: &mut Table, log: &mut Log, command: Command) {
+pub fn apply_command(table: &mut Table, log: &mut Log, command: Command, term: u64) {
     match &command {
         Command::CreateTable { table_name, .. } => {
             *table = Table::init_table(table_name.clone());
@@ -15,5 +15,5 @@ pub fn apply_command(table: &mut Table, log: &mut Log, command: Command) {
         }
     }
 
-    log.append(0, command);
+    log.append(term, command);
 }

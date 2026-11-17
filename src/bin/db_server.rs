@@ -4,7 +4,7 @@ use raft_db::database::command::Command;
 use raft_db::raft::log::Log;
 use raft_db::raft::peers::{Peer, PeerRegistry};
 use raft_db::raft::roles::Role;
-use raft_db::raft::voting::{NodeState, run_heartbeats};
+use raft_db::raft::voting::{Membership, NodeState, run_elections};
 
 use raft_db::database::table::{Table, TableOut};
 use raft_db::grpc;
@@ -58,22 +58,33 @@ async fn leader_process(
     }
 
     if role != Role::Leader {
+        let leader_id = state
+            .lock()
+            .unwrap()
+            .leader_id
+            .clone()
+            .ok_or_else(|| actix_web::error::ErrorServiceUnavailable("leader is unknown"))?;
         let leader = peer_registry
             .lock()
             .unwrap()
-            .leader()
+            .all()
+            .into_iter()
+            .find(|peer| peer.node_id == leader_id)
             .ok_or_else(|| actix_web::error::ErrorServiceUnavailable("leader is unknown"))?;
 
-        grpc::propose_command(&leader.grpc_address, &cmd.into_inner())
+        grpc::propose_command(&leader.grpc_address, &cmd.into_inner(), &state)
             .await
             .map_err(actix_web::error::ErrorBadGateway)?;
         return Ok(HttpResponse::Ok().finish());
     }
 
     let command = cmd.into_inner();
-    grpc::apply_and_broadcast(&data, &log, &peers, &self_address, command)
+    let response = grpc::apply_and_broadcast(&data, &log, &state, &peers, &self_address, command)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
+    if !response.success {
+        return Err(actix_web::error::ErrorServiceUnavailable(response.message));
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -99,9 +110,6 @@ async fn main() -> std::io::Result<()> {
 
     let database = Arc::new(Mutex::new(Table::init_table("my_table".to_string())));
     let log = Arc::new(Mutex::new(Log::new_log()));
-    let peer_registry = Arc::new(Mutex::new(PeerRegistry::from_env(
-        &env::var("PEER_INFO").unwrap_or_default(),
-    )));
     let state = Arc::new(Mutex::new(NodeState::new()));
     let own_peer = Peer::new(
         format!("node-{port}"),
@@ -109,7 +117,14 @@ async fn main() -> std::io::Result<()> {
         format!("127.0.0.1:{grpc_port}"),
         state.lock().unwrap().role,
     );
-    peer_registry.lock().unwrap().upsert(own_peer.clone());
+    let (membership, registry) = Membership::from_config(
+        &own_peer,
+        &env::var("PEER_INFO").unwrap_or_default(),
+        &peers,
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let peer_registry = Arc::new(Mutex::new(registry));
+    let peers = web::Data::new(membership.peers.values().cloned().collect::<Vec<_>>());
 
     let log_data = web::Data::from(log.clone());
     let database_data = web::Data::from(database.clone());
@@ -125,21 +140,24 @@ async fn main() -> std::io::Result<()> {
         grpc_port,
     );
 
-    tokio::spawn(run_heartbeats(
-        state.clone(),
-        peer_registry.clone(),
-        peers.get_ref().clone(),
-        own_peer.grpc_address.clone(),
-    ));
+    tokio::spawn(run_elections(state.clone(), log.clone(), membership));
 
-    let targets = peer_registry.lock().unwrap().all();
+    let targets = peers.get_ref().clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        for peer in targets {
-            if peer.node_id != own_peer.node_id {
-                let _ = grpc::broadcast_peer(peer.grpc_address.clone(), own_peer.clone()).await;
-            }
-        }
+        use futures_util::{StreamExt, stream};
+        stream::iter(targets)
+            .for_each_concurrent(16, |address| {
+                let own_peer = own_peer.clone();
+                async move {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        grpc::broadcast_peer(address, own_peer),
+                    )
+                    .await;
+                }
+            })
+            .await;
     });
 
     /*
@@ -213,8 +231,15 @@ mod tests {
         (service, task)
     }
 
-    async fn post_command(leader_address: Option<String>) -> (StatusCode, String, usize) {
+    async fn post_command(
+        leader_address: Option<String>,
+        known: bool,
+    ) -> (StatusCode, String, usize) {
         let registry = web::Data::new(Mutex::new(PeerRegistry::default()));
+        let mut state = NodeState::new();
+        if known && leader_address.is_some() {
+            state.leader_id = Some("leader".into());
+        }
         if let Some(address) = leader_address {
             registry.lock().unwrap().upsert(Peer::new(
                 "leader".to_string(),
@@ -230,7 +255,7 @@ mod tests {
                     "test".to_string(),
                 ))))
                 .app_data(log.clone())
-                .app_data(web::Data::new(Mutex::new(NodeState::new())))
+                .app_data(web::Data::new(Mutex::new(state)))
                 .app_data(web::Data::new(Vec::<String>::new()))
                 .app_data(web::Data::new(String::new()))
                 .app_data(registry)
@@ -254,7 +279,7 @@ mod tests {
 
     #[actix_web::test]
     async fn unknown_leader_still_returns_service_unavailable() {
-        let (status, body, entries) = post_command(None).await;
+        let (status, body, entries) = post_command(None, false).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body, "leader is unknown");
         assert_eq!(entries, 0);
@@ -264,12 +289,14 @@ mod tests {
     async fn follower_forwards_proposal_and_leader_broadcasts() {
         let (replica, replica_task) = serve(Role::Follower, vec![]).await;
         let (leader, leader_task) = serve(Role::Leader, vec![replica.self_address.clone()]).await;
-        let (status, _, entries) = post_command(Some(leader.self_address.clone())).await;
+        leader.state.lock().unwrap().current_term = 7;
+        let (status, _, entries) = post_command(Some(leader.self_address.clone()), true).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(entries, 0);
         for service in [&leader, &replica] {
             let log = service.log.lock().unwrap();
             assert_eq!(log.content.len(), 1);
+            assert_eq!(log.content[0].term, 7);
             assert!(matches!(&log.content[0].command,
                 Command::CreateTable { table_id: 1, table_name } if table_name == "forwarded"));
         }
@@ -280,10 +307,34 @@ mod tests {
     #[actix_web::test]
     async fn stale_leader_returns_bad_gateway_without_applying() {
         let (service, task) = serve(Role::Follower, vec![]).await;
-        let (status, _, entries) = post_command(Some(service.self_address.clone())).await;
+        let (status, _, entries) = post_command(Some(service.self_address.clone()), true).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(entries, 0);
         assert!(service.log.lock().unwrap().content.is_empty());
         task.abort();
+    }
+
+    #[actix_web::test]
+    async fn peer_role_announcement_does_not_select_leader() {
+        let (service, task) = serve(Role::Leader, vec![]).await;
+        let (status, _, entries) = post_command(Some(service.self_address.clone()), false).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(entries, 0);
+        assert!(service.log.lock().unwrap().content.is_empty());
+        task.abort();
+    }
+
+    #[actix_web::test]
+    async fn higher_replica_response_steps_leader_down() {
+        let (replica, replica_task) = serve(Role::Follower, vec![]).await;
+        replica.state.lock().unwrap().current_term = 9;
+        let (leader, leader_task) = serve(Role::Leader, vec![replica.self_address.clone()]).await;
+        let (status, _, _) = post_command(Some(leader.self_address.clone()), true).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(leader.state.lock().unwrap().current_term, 9);
+        assert_eq!(leader.state.lock().unwrap().role, Role::Follower);
+        assert!(replica.log.lock().unwrap().content.is_empty());
+        leader_task.abort();
+        replica_task.abort();
     }
 }

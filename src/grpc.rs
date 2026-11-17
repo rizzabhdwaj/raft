@@ -38,7 +38,7 @@ mod tests {
                 peers: vec![],
                 self_address: String::new(),
             };
-            let error = service
+            let response = service
                 .propose_command(Request::new(proto::CommandRequest {
                     command_json: serde_json::to_string(&Command::CreateTable {
                         table_id: 1,
@@ -48,8 +48,9 @@ mod tests {
                     term: 0,
                 }))
                 .await
-                .unwrap_err();
-            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+                .unwrap()
+                .into_inner();
+            assert!(!response.success);
             assert!(service.log.lock().unwrap().content.is_empty());
         }
     }
@@ -79,6 +80,55 @@ mod tests {
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "node-3000");
         assert_eq!(peers[0].role, Role::Follower);
+    }
+
+    #[tokio::test]
+    async fn command_paths_observe_terms_and_reject_stale_replication() {
+        let service = LogService {
+            table: Arc::new(Mutex::new(Table::init_table("test".into()))),
+            log: Arc::new(Mutex::new(Log::new_log())),
+            state: Arc::new(Mutex::new(NodeState::new())),
+            peers: vec![],
+            self_address: String::new(),
+        };
+        service.state.lock().unwrap().role = Role::Leader;
+        let command = |term| {
+            Request::new(proto::CommandRequest {
+                command_json: serde_json::to_string(&Command::CreateTable {
+                    table_id: 1,
+                    table_name: "test".into(),
+                })
+                .unwrap(),
+                term,
+            })
+        };
+        let response = service
+            .propose_command(command(4))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!response.success);
+        assert_eq!(response.term, 4);
+        assert_eq!(service.state.lock().unwrap().role, Role::Follower);
+        assert!(service.log.lock().unwrap().content.is_empty());
+        assert!(
+            service
+                .apply_command(command(5))
+                .await
+                .unwrap()
+                .into_inner()
+                .success
+        );
+        let response = service
+            .apply_command(command(4))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!response.success);
+        assert_eq!(response.term, 5);
+        let log = service.log.lock().unwrap();
+        assert_eq!(log.content.len(), 1);
+        assert_eq!(log.content[0].term, 5);
     }
 }
 
@@ -114,38 +164,41 @@ impl proto::log_service_server::LogService for LogService {
     async fn heartbeat(
         &self,
         request: Request<proto::HeartbeatRequest>,
-    ) -> Result<Response<proto::Empty>, Status> {
-        crate::raft::voting::receive_heartbeat(&self.state, request.into_inner())?;
-        Ok(Response::new(proto::Empty {}))
+    ) -> Result<Response<proto::HeartbeatResponse>, Status> {
+        Ok(Response::new(
+            self.state.lock().unwrap().heartbeat(request.into_inner())?,
+        ))
+    }
+
+    async fn request_vote(
+        &self,
+        request: Request<proto::VoteRequest>,
+    ) -> Result<Response<proto::VoteResponse>, Status> {
+        let mut state = self.state.lock().unwrap();
+        let last = crate::raft::voting::last_log(&self.log.lock().unwrap());
+        Ok(Response::new(
+            state.request_vote(request.into_inner(), last),
+        ))
     }
 
     async fn propose_command(
         &self,
         request: Request<proto::CommandRequest>,
     ) -> Result<Response<proto::CommandResponse>, Status> {
-        if self
-            .state
-            .lock()
-            .map_err(|_| Status::internal("node state lock poisoned"))?
-            .role
-            != Role::Leader
-        {
-            return Err(Status::failed_precondition("node is not the leader"));
-        }
-        let command = serde_json::from_str(&request.into_inner().command_json)
+        let request = request.into_inner();
+        self.state.lock().unwrap().observe_term(request.term);
+        let command = serde_json::from_str(&request.command_json)
             .map_err(|_| Status::invalid_argument("invalid command"))?;
         apply_and_broadcast(
             &self.table,
             &self.log,
+            &self.state,
             &self.peers,
             &self.self_address,
             command,
         )
-        .await?;
-        Ok(Response::new(proto::CommandResponse {
-            success: true,
-            message: "command applied".to_string(),
-        }))
+        .await
+        .map(Response::new)
     }
 
     async fn get_log(
@@ -176,7 +229,17 @@ impl proto::log_service_server::LogService for LogService {
         &self,
         request: Request<proto::CommandRequest>,
     ) -> Result<Response<proto::CommandResponse>, Status> {
-        let command = serde_json::from_str(&request.into_inner().command_json)
+        let request = request.into_inner();
+        let mut state = self.state.lock().unwrap();
+        state.observe_term(request.term);
+        if request.term < state.current_term {
+            return Ok(Response::new(proto::CommandResponse {
+                success: false,
+                message: "stale term".into(),
+                term: state.current_term,
+            }));
+        }
+        let command = serde_json::from_str(&request.command_json)
             .map_err(|_| Status::invalid_argument("invalid command"))?;
         let mut table = self
             .table
@@ -186,11 +249,12 @@ impl proto::log_service_server::LogService for LogService {
             .log
             .lock()
             .map_err(|_| Status::internal("log lock poisoned"))?;
-        apply_command(&mut table, &mut log, command);
+        apply_command(&mut table, &mut log, command, request.term);
 
         Ok(Response::new(proto::CommandResponse {
             success: true,
             message: "command applied".to_string(),
+            term: state.current_term,
         }))
     }
 }
@@ -293,53 +357,85 @@ pub async fn broadcast_peer(address: String, peer: Peer) -> Result<(), Status> {
         .map_err(|error| Status::unavailable(error.to_string()))
 }
 
-pub async fn broadcast_command(peers: &[String], self_address: &str, command: &Command) {
-    for peer in peers {
-        if peer == self_address {
-            continue;
-        }
-
-        if let Err(error) = send_command(peer, command).await {
-            eprintln!("failed to send command to {peer}: {error}");
-        }
-    }
-}
-
 pub async fn apply_and_broadcast(
     table: &Mutex<Table>,
     log: &Mutex<Log>,
+    state: &Mutex<NodeState>,
     peers: &[String],
     self_address: &str,
     command: Command,
-) -> Result<(), Status> {
-    {
+) -> Result<proto::CommandResponse, Status> {
+    let term = {
+        let state = state.lock().unwrap();
+        if state.role != Role::Leader {
+            return Ok(proto::CommandResponse {
+                success: false,
+                message: "node is not the leader".into(),
+                term: state.current_term,
+            });
+        }
         let mut table = table
             .lock()
             .map_err(|_| Status::internal("table lock poisoned"))?;
         let mut log = log
             .lock()
             .map_err(|_| Status::internal("log lock poisoned"))?;
-        apply_command(&mut table, &mut log, command.clone());
+        apply_command(&mut table, &mut log, command.clone(), state.current_term);
+        state.current_term
+    };
+    use futures_util::{StreamExt, stream};
+    let targets: std::collections::HashSet<_> = peers
+        .iter()
+        .filter(|p| p.as_str() != self_address)
+        .collect();
+    let requests: Vec<_> = targets
+        .into_iter()
+        .map(|peer| {
+            let peer = peer.clone();
+            let command = command.clone();
+            async move { send_command(&peer, &command, term).await }
+        })
+        .collect();
+    let mut responses = stream::iter(requests).buffer_unordered(16);
+    while let Some(result) = responses.next().await {
+        if let Ok(response) = result {
+            state.lock().unwrap().observe_term(response.term);
+        }
     }
-    broadcast_command(peers, self_address, &command).await;
-    Ok(())
+    let state = state.lock().unwrap();
+    Ok(proto::CommandResponse {
+        success: state.current_term == term && state.role == Role::Leader,
+        message: "command applied locally (not quorum committed)".into(),
+        term: state.current_term,
+    })
 }
 
-pub async fn propose_command(address: &str, command: &Command) -> Result<(), Status> {
-    let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))
-        .map_err(|error| Status::internal(error.to_string()))?
-        .connect()
-        .await
-        .map_err(|error| Status::unavailable(error.to_string()))?;
-    let mut client = proto::log_service_client::LogServiceClient::new(channel);
-    let response = client
-        .propose_command(proto::CommandRequest {
-            command_json: serde_json::to_string(command)
-                .map_err(|error| Status::internal(error.to_string()))?,
-            term: 0,
-        })
-        .await?
-        .into_inner();
+pub async fn propose_command(
+    address: &str,
+    command: &Command,
+    state: &Mutex<NodeState>,
+) -> Result<(), Status> {
+    let term = state.lock().unwrap().current_term;
+    let response = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))
+            .map_err(|error| Status::internal(error.to_string()))?
+            .connect()
+            .await
+            .map_err(|error| Status::unavailable(error.to_string()))?;
+        let mut client = proto::log_service_client::LogServiceClient::new(channel);
+        let response = client
+            .propose_command(proto::CommandRequest {
+                command_json: serde_json::to_string(command)
+                    .map_err(|error| Status::internal(error.to_string()))?,
+                term,
+            })
+            .await?
+            .into_inner();
+        Ok::<_, Status>(response)
+    })
+    .await
+    .map_err(|_| Status::deadline_exceeded("proposal timed out"))??;
+    state.lock().unwrap().observe_term(response.term);
     if !response.success {
         return Err(Status::failed_precondition(response.message));
     }
@@ -349,18 +445,22 @@ pub async fn propose_command(address: &str, command: &Command) -> Result<(), Sta
 pub async fn send_command(
     address: &str,
     command: &Command,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))?
-        .connect()
-        .await?;
-    let mut client = proto::log_service_client::LogServiceClient::new(channel);
+    term: u64,
+) -> Result<proto::CommandResponse, Box<dyn std::error::Error + Send + Sync>> {
+    tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        let mut client = proto::log_service_client::LogServiceClient::new(channel);
 
-    client
-        .apply_command(proto::CommandRequest {
-            command_json: serde_json::to_string(command)?,
-            term: 0,
-        })
-        .await?;
+        let response = client
+            .apply_command(proto::CommandRequest {
+                command_json: serde_json::to_string(command)?,
+                term,
+            })
+            .await?;
 
-    Ok(())
+        Ok(response.into_inner())
+    })
+    .await?
 }
