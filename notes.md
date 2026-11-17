@@ -58,3 +58,36 @@
 
     }
     ```
+
+### Voting 
+- Everyone is follower with a randomly assigned ElectionTimeout between 150–300 ms 
+- Some/All (potentially) followers (if no Heartbeats till ElectionTimeout) become Candidate and increment the term and add one vote to themselve's 
+a
+ 
+    ```rust 
+        role = Role::Candidate;
+        current_term += 1;
+        voted_for = Some(self.id);
+        votes_received = 1;
+   ```
+
+
+- Issues `RequestVote RPCs` to all of the other Node's in the cluster 
+    
+    ```rust 
+        struct RequestVote {
+            term: u64,
+            candidate_id: u64,
+            last_log_index: u64,
+            last_log_term: u64,  // if the log's are outdated raft wont let it be the leader 
+        }
+    ```
+
+- Votes are to be given as fist-come-first-serve basis given the following criteria matches 
+    - The candidate's term is at least as recent as its own.
+    - It hasn't already voted for another candidate in that term.
+    - The candidate's log is at least as up-to-date as its own.
+
+- Candidate with majority vote's win (not more votes) and will start sending heartbeats (empty `ReplicateLog`)
+- If nobody gets a majority, the election times out and another election starts with a new term.
+- If any node discovers a higher term, it updates its term and steps down to Follower if necessary
