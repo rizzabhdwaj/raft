@@ -1,4 +1,4 @@
-# Simple in-memory data storage with raft consensus implimentation 
+# Raft Consensus implementation on an in-memory datastore
 
 
 ## Archetecture - **Client** can query any node but the request will be redirected to the **Leader** only
